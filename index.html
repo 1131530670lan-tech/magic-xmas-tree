@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Ultimate Xmas Dream</title>
+    <title>Xmas Dream: Gallery Edition</title>
     <style>
-        /* 背景纯黑，最大化光影对比 */
+        /* 深邃纯黑背景，衬托金色粒子 */
         body { margin: 0; overflow: hidden; background: #000; font-family: "Times New Roman", serif; touch-action: none; }
         canvas { display: block; width: 100vw; height: 100vh; }
         #video-input { position: absolute; top: 0; left: 0; opacity: 0; pointer-events: none; width: 1px; height: 1px; }
@@ -16,22 +16,20 @@
             z-index: 10; color: #fff;
         }
         
-        /* 模仿参考图的标题风格 */
         h1 { 
-            margin: 0 0 10px 0; font-weight: 400; text-transform: uppercase; 
-            font-size: 28px; color: #f0e68c; letter-spacing: 5px; text-align: center;
+            margin: 0 0 5px 0; font-weight: 400; text-transform: uppercase; 
+            font-size: 24px; color: #f0e68c; letter-spacing: 4px; text-align: center;
             text-shadow: 0 0 20px rgba(240, 230, 140, 0.6);
         }
         
-        /* 极简的小按钮 */
-        .sub-controls { text-align: center; }
+        .sub-controls { text-align: center; pointer-events: auto; }
         #upload-btn {
-            background: transparent;
-            border: 1px solid rgba(240, 230, 140, 0.4); color: #f0e68c; 
-            padding: 6px 12px; cursor: pointer; pointer-events: auto;
+            background: rgba(0,0,0,0.5); border: 1px solid rgba(240, 230, 140, 0.4); 
+            color: #f0e68c; padding: 8px 15px; cursor: pointer; 
             text-transform: uppercase; font-size: 10px; letter-spacing: 2px;
-            transition: all 0.3s; display: inline-block;
+            transition: all 0.3s; display: inline-block; border-radius: 20px;
         }
+        #upload-btn:active { background: rgba(240, 230, 140, 0.2); }
         
         #loader {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -41,8 +39,16 @@
 
         #guide {
             position: absolute; bottom: 30px; width: 100%; text-align: center;
-            font-family: sans-serif; font-size: 10px; color: rgba(255,255,255,0.5);
-            letter-spacing: 1px; text-transform: uppercase;
+            font-family: sans-serif; font-size: 10px; color: rgba(255,255,255,0.4);
+            letter-spacing: 1px; text-transform: uppercase; line-height: 1.5;
+        }
+        .key { color: #f0e68c; font-weight: bold; margin: 0 2px; }
+        
+        /* 状态指示器 */
+        #mode-indicator {
+            position: absolute; top: 80px; width: 100%; text-align: center;
+            font-size: 10px; color: rgba(240, 230, 140, 0.6); letter-spacing: 2px;
+            opacity: 0; transition: opacity 0.5s;
         }
     </style>
 
@@ -61,21 +67,24 @@
 </head>
 <body>
     <video id="video-input" playsinline webkit-playsinline style="transform: scaleX(-1);"></video>
+    
     <div id="loader">
-        <div style="letter-spacing: 3px; font-size: 14px;">IGNITING STARS...</div>
+        <div style="letter-spacing: 3px; font-size: 14px;">LOADING MAGIC...</div>
     </div>
 
     <div id="ui-layer">
         <div>
             <h1>Merry Christmas</h1>
+            <div id="mode-indicator">TREE MODE</div>
             <div class="sub-controls">
-                <label for="file-input" id="upload-btn">ADD MEMORIES</label>
+                <label for="file-input" id="upload-btn">Add Photos</label>
                 <input type="file" id="file-input" multiple accept="image/*" style="display: none;">
             </div>
         </div>
         
         <div id="guide">
-            Press ✊ to gather · 🖐 to scatter · 👌 for gallery
+            <span class="key">✊</span> Fist: Reset Tree<br>
+            <span class="key">👌</span> Pinch: Gallery · <span class="key">👐</span> Open Pinch: Zoom Photo
         </div>
     </div>
 
@@ -86,29 +95,28 @@
         import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
         const CONFIG = {
-            particleCount: 4000, // 粒子数量大幅增加
+            particleCount: 4500, // 保持奢华的粒子数量
             treeHeight: 35,
             treeRadius: 12,
-            scatterRadius: 50,
-            carouselRadius: 20
+            scatterRadius: 55,
+            carouselRadius: 18
         };
 
         let scene, camera, renderer, composer;
         let particleSystem, photoGroup;
         let photoParticles = [];
-        let currentState = 'TREE'; 
-        let targetRotationY = 0;
-        let carouselRotation = 0;
-        // 用于 GSAP 动画的中间变量
-        const animState = { transition: 0 }; 
+        let currentState = 'TREE'; // 'TREE', 'CAROUSEL', 'ZOOM'
         
+        // 动画变量
+        const animState = { transition: 0 }; 
+        let carouselAngleOffset = 0; // 轮播图的旋转角度
+        let activePhotoIndex = 0;    // 当前面向用户的照片索引
+
         const worldGroup = new THREE.Group();
         photoGroup = new THREE.Group();
         worldGroup.add(photoGroup);
 
-        let touchStartX = 0; let isTouching = false;
-
-        // --- GLSL Shaders ---
+        // --- GLSL Shaders (保持极繁主义视觉) ---
         const vertexShader = `
             uniform float uTime;
             uniform float uState; // 0=Tree, 1=Scattered
@@ -121,23 +129,20 @@
 
             void main() {
                 vRandom = aRandom;
-                // 在树形态和散开形态之间插值
                 vec3 pos = mix(aTreePos, aScatterPos, uState);
                 vPos = pos;
-
-                // 添加基于时间的噪点运动，让粒子“呼吸”
-                float noise = sin(uTime * 2.0 + aRandom * 10.0) * 0.2;
-                pos.x += noise * uState; // 散开时动得更厉害
-                pos.y += noise * 0.5;
-                pos.z += cos(uTime * 2.0 + aRandom * 10.0) * 0.2 * uState;
+                
+                // 呼吸效果
+                float noise = sin(uTime * 1.5 + aRandom * 15.0) * 0.15;
+                pos.x += noise * uState; 
+                pos.y += noise * 0.3;
+                pos.z += cos(uTime * 1.5 + aRandom * 15.0) * 0.15 * uState;
 
                 vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
                 gl_Position = projectionMatrix * mvPosition;
 
-                // 闪烁效果
-                float twinkle = sin(uTime * 3.0 + aRandom * 20.0) * 0.5 + 0.5;
-                // 大小随距离衰减，并受闪烁影响
-                gl_PointSize = aSize * (200.0 / -mvPosition.z) * (0.3 + 0.7 * twinkle);
+                float twinkle = sin(uTime * 3.0 + aRandom * 25.0) * 0.5 + 0.5;
+                gl_PointSize = aSize * (220.0 / -mvPosition.z) * (0.4 + 0.6 * twinkle);
             }
         `;
 
@@ -148,28 +153,19 @@
             varying vec3 vPos;
 
             void main() {
-                // 创建柔和的圆形辉光粒子
                 float dist = length(gl_PointCoord - vec2(0.5));
                 if (dist > 0.5) discard;
-
-                // 核心非常亮，边缘快速衰减
-                float strength = pow(1.0 - dist * 2.0, 2.0);
-                
-                // 颜色在金色和暖橙色之间随机混合
+                float strength = pow(1.0 - dist * 2.0, 2.5);
                 vec3 color = mix(uColor1, uColor2, vRandom);
-                
-                // 根据高度增加一点色彩变化，底部偏红，顶部偏白
-                color += vec3(0.1, 0.05, 0.0) * (vPos.y / 20.0);
-
-                gl_FragColor = vec4(color * strength * 1.5, strength);
+                // 底部偏红，顶部偏亮
+                color += vec3(0.15, 0.05, 0.0) * (vPos.y / 25.0);
+                gl_FragColor = vec4(color * strength * 1.8, strength);
             }
         `;
 
-
         async function init() {
             scene = new THREE.Scene();
-            // 极淡的金色雾气，增加空气感
-            scene.fog = new THREE.FogExp2(0x1a1205, 0.008);
+            scene.fog = new THREE.FogExp2(0x0a0500, 0.006); // 黑色微金雾
             
             camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 500);
             camera.position.set(0, 2, 45);
@@ -178,7 +174,7 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
             renderer.toneMapping = THREE.ACESFilmicToneMapping;
-            renderer.toneMappingExposure = 1.0;
+            renderer.toneMappingExposure = 1.1;
             document.body.appendChild(renderer.domElement);
 
             scene.add(worldGroup);
@@ -190,39 +186,22 @@
             window.addEventListener('resize', onWindowResize);
             document.getElementById('file-input').addEventListener('change', handleUpload);
 
-            setupTouchEvents();
             setupMediaPipe();
             animate();
         }
 
         function setupLighting() {
-            // 强烈的中心暖光，照亮照片
-            const mainLight = new THREE.PointLight(0xffd700, 5, 100);
-            mainLight.position.set(0, 10, 0);
+            const mainLight = new THREE.PointLight(0xffd700, 4, 100);
+            mainLight.position.set(0, 15, 0);
             worldGroup.add(mainLight);
         }
 
         function setupPostProcessing() {
             const renderScene = new RenderPass(scene, camera);
-            // 极致辉光参数：强度极高，半径大
-            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 3.0, 1.0, 0.9);
-            
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 2.5, 0.8, 0.9);
             composer = new EffectComposer(renderer);
             composer.addPass(renderScene);
             composer.addPass(bloomPass);
-        }
-
-        function setupTouchEvents() {
-            document.addEventListener('touchstart', (e) => { touchStartX = e.touches[0].clientX; isTouching = true; }, {passive: false});
-            document.addEventListener('touchmove', (e) => {
-                if (!isTouching) return;
-                const diffX = e.touches[0].clientX - touchStartX;
-                if (currentState === 'CAROUSEL') carouselRotation += diffX * 0.008;
-                else if (currentState === 'SCATTERED') worldGroup.rotation.y += diffX * 0.005;
-                touchStartX = e.touches[0].clientX;
-                if(e.cancelable) e.preventDefault(); 
-            }, {passive: false});
-            document.addEventListener('touchend', () => { isTouching = false; });
         }
 
         function createParticleSystem() {
@@ -233,28 +212,28 @@
             const sizes = new Float32Array(CONFIG.particleCount);
 
             for (let i = 0; i < CONFIG.particleCount; i++) {
-                // 树形位置 (螺旋圆锥)
-                const angle = i * 0.1 + Math.random() * 0.5; // 增加随机性让分布更自然
+                // Tree
+                const angle = i * 0.1 + Math.random() * 0.5;
                 const y = (i / CONFIG.particleCount) * CONFIG.treeHeight - (CONFIG.treeHeight / 2);
                 const progress = (y + (CONFIG.treeHeight / 2)) / CONFIG.treeHeight; 
-                const radius = CONFIG.treeRadius * Math.pow(1 - progress, 0.9) + Math.random(); // 增加一点随机半径抖动
+                const radius = CONFIG.treeRadius * Math.pow(1 - progress, 0.9) + Math.random();
                 treePositions[i*3] = Math.cos(angle) * radius;
                 treePositions[i*3+1] = y;
                 treePositions[i*3+2] = Math.sin(angle) * radius;
 
-                // 散开位置 (随机球体)
+                // Scatter
                 const theta = Math.random() * Math.PI * 2;
                 const phi = Math.acos(2 * Math.random() - 1);
                 const r = CONFIG.scatterRadius * Math.cbrt(Math.random());
                 scatterPositions[i*3] = r * Math.sin(phi) * Math.cos(theta);
-                scatterPositions[i*3+1] = r * Math.sin(phi) * Math.sin(theta) * 1.5; // Y轴拉伸
+                scatterPositions[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
                 scatterPositions[i*3+2] = r * Math.cos(phi);
 
                 randoms[i] = Math.random();
-                sizes[i] = Math.random() * 2.0 + 1.0; // 基础大小差异
+                sizes[i] = Math.random() * 2.0 + 0.5;
             }
 
-            geometry.setAttribute('position', new THREE.BufferAttribute(treePositions, 3)); // 初始位置
+            geometry.setAttribute('position', new THREE.BufferAttribute(treePositions, 3));
             geometry.setAttribute('aTreePos', new THREE.BufferAttribute(treePositions, 3));
             geometry.setAttribute('aScatterPos', new THREE.BufferAttribute(scatterPositions, 3));
             geometry.setAttribute('aRandom', new THREE.BufferAttribute(randoms, 1));
@@ -263,154 +242,192 @@
             const material = new THREE.ShaderMaterial({
                 uniforms: {
                     uTime: { value: 0 },
-                    uState: { value: 0 }, // 0=Tree, 1=Scattered
-                    uColor1: { value: new THREE.Color(0xffd700) }, // 金色
-                    uColor2: { value: new THREE.Color(0xff8c00) }  // 暖橙色
+                    uState: { value: 0 },
+                    uColor1: { value: new THREE.Color(0xffd700) }, // Gold
+                    uColor2: { value: new THREE.Color(0xff4500) }  // Red-Orange
                 },
                 vertexShader: vertexShader,
                 fragmentShader: fragmentShader,
                 transparent: true,
-                depthWrite: false, // 关键：关闭深度写入，实现粒子叠加
-                blending: THREE.AdditiveBlending // 关键：加法混合，越叠加越亮
+                depthWrite: false,
+                blending: THREE.AdditiveBlending
             });
 
             particleSystem = new THREE.Points(geometry, material);
             worldGroup.add(particleSystem);
-
-            // 顶部超亮星光
-            const starGeo = new THREE.SphereGeometry(1.5, 16, 16);
-            const starMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
-            const starMesh = new THREE.Mesh(starGeo, starMat);
-            starMesh.position.set(0, CONFIG.treeHeight/2 + 2, 0);
-            // 给星星加一个巨大的点光源
-            const starLight = new THREE.PointLight(0xffffff, 10, 50);
-            starMesh.add(starLight);
-            worldGroup.add(starMesh);
+            
+            // Top Star
+            const starGeo = new THREE.OctahedronGeometry(1.5, 0);
+            const starMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            const star = new THREE.Mesh(starGeo, starMat);
+            star.position.set(0, CONFIG.treeHeight/2 + 2, 0);
+            worldGroup.add(star);
         }
 
         function handleUpload(event) {
             const files = event.target.files; if (!files.length) return;
             const loader = new THREE.TextureLoader();
-            Array.from(files).slice(0, 12).forEach((file, index) => {
+            Array.from(files).slice(0, 15).forEach((file, index) => {
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     loader.load(e.target.result, (texture) => {
                         texture.colorSpace = THREE.SRGBColorSpace;
                         const aspectRatio = texture.image.width / texture.image.height;
                         
-                        // 照片本体
-                        const photoGeo = new THREE.PlaneGeometry(3 * aspectRatio, 3);
+                        const photoGeo = new THREE.PlaneGeometry(4 * aspectRatio, 4);
                         const photoMat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
                         const photoMesh = new THREE.Mesh(photoGeo, photoMat);
                         
-                        // 发光边框
-                        const frameGeo = new THREE.PlaneGeometry(3 * aspectRatio + 0.1, 3.1);
+                        // Golden Frame
+                        const frameGeo = new THREE.PlaneGeometry(4 * aspectRatio + 0.2, 4.2);
                         const frameMat = new THREE.MeshBasicMaterial({ color: 0xffd700 });
                         const frameMesh = new THREE.Mesh(frameGeo, frameMat);
-                        frameMesh.position.z = -0.01;
+                        frameMesh.position.z = -0.02;
                         photoMesh.add(frameMesh);
 
-                        // 初始位置
-                        const angle = (index / files.length) * Math.PI * 2;
-                        const radius = CONFIG.treeRadius + 2;
-                        const y = (Math.random() - 0.5) * CONFIG.treeHeight * 0.6;
-                        photoMesh.position.set(Math.cos(angle)*radius, y, Math.sin(angle)*radius);
+                        // Default Tree Position
+                        const angle = Math.random() * Math.PI * 2;
+                        const y = (Math.random() - 0.5) * CONFIG.treeHeight * 0.7;
+                        const r = CONFIG.treeRadius + 2;
+                        photoMesh.position.set(Math.cos(angle)*r, y, Math.sin(angle)*r);
                         photoMesh.lookAt(0, y, 0);
                         
                         photoGroup.add(photoMesh);
-                        photoParticles.push({ mesh: photoMesh, treePos: photoMesh.position.clone(), carouselAngle: 0 });
-
+                        photoParticles.push({ 
+                            mesh: photoMesh, 
+                            treePos: photoMesh.position.clone(),
+                            treeRot: photoMesh.rotation.clone(),
+                            index: photoParticles.length 
+                        });
+                        
                         if(currentState === 'TREE') toTreeState();
                     });
                 };
                 reader.readAsDataURL(file);
             });
+            showMode("PHOTOS ADDED");
         }
 
         function switchState(newState) {
             if (currentState === newState) return;
-            if (newState === 'CAROUSEL' && photoParticles.length === 0) return;
+            // Prevent entering Gallery if no photos
+            if ((newState === 'CAROUSEL' || newState === 'ZOOM') && photoParticles.length === 0) {
+                showMode("ADD PHOTOS FIRST");
+                return;
+            }
+
             currentState = newState;
+            showMode(currentState);
 
             if (currentState === 'TREE') toTreeState();
-            else if (currentState === 'SCATTERED') toScatteredState();
             else if (currentState === 'CAROUSEL') toCarouselState();
+            else if (currentState === 'ZOOM') toZoomState();
         }
+
+        function showMode(text) {
+            const el = document.getElementById('mode-indicator');
+            el.innerText = text;
+            el.style.opacity = 1;
+            clearTimeout(el.timeout);
+            el.timeout = setTimeout(() => el.style.opacity = 0, 2000);
+        }
+
+        // --- State Transitions ---
 
         function toTreeState() {
-            // Shader 动画：过渡到状态 0
-            gsap.to(animState, { value: 0, duration: 2.5, ease: "power2.inOut", 
+            // Particles -> Tree Shape
+            gsap.to(animState, { value: 0, duration: 2, ease: "power2.inOut", 
                 onUpdate: () => { particleSystem.material.uniforms.uState.value = animState.value; }
             });
-            gsap.to(camera.position, { duration: 2, x: 0, y: 2, z: 45, ease: "power2.inOut" });
-            gsap.to(worldGroup.rotation, { duration: 2, x: 0, z: 0 });
-            
+            // Camera Reset
+            gsap.to(camera.position, { duration: 2, x: 0, y: 2, z: 45 });
+            gsap.to(camera.rotation, { duration: 2, x: 0, y: 0, z: 0 });
+            gsap.to(worldGroup.rotation, { duration: 2, x: 0, z: 0 }); // Allow Y auto-rotate later
+
+            // Photos return to tree
             photoParticles.forEach(p => {
-                gsap.to(p.mesh.position, { duration: 2, x: p.treePos.x, y: p.treePos.y, z: p.treePos.z, ease: "power2.inOut" });
-                gsap.to(p.mesh.rotation, { duration: 2, x: 0, y: Math.atan2(p.treePos.x, p.treePos.z), z: 0 });
-                gsap.to(p.mesh.scale, { duration: 1.5, x: 1, y: 1, z: 1 });
+                gsap.to(p.mesh.position, { duration: 2, x: p.treePos.x, y: p.treePos.y, z: p.treePos.z, ease: "back.out(1)" });
+                gsap.to(p.mesh.rotation, { duration: 2, x: p.treeRot.x, y: p.treeRot.y, z: p.treeRot.z });
+                gsap.to(p.mesh.scale, { duration: 1, x: 1, y: 1, z: 1 });
             });
         }
 
-        function toScatteredState() {
-            // Shader 动画：过渡到状态 1
-            gsap.to(animState, { value: 1, duration: 3, ease: "power3.out", 
-                onUpdate: () => { particleSystem.material.uniforms.uState.value = animState.value; }
-            });
-            gsap.to(camera.position, { duration: 3, z: 60, ease: "power2.out" });
-            
-            photoParticles.forEach(p => {
-                // 照片也散开到远处
-                gsap.to(p.mesh.position, { 
-                    duration: 3, 
-                    x: p.treePos.x * 3 + (Math.random()-0.5)*20, 
-                    y: p.treePos.y * 3 + (Math.random()-0.5)*20, 
-                    z: p.treePos.z * 3 + (Math.random()-0.5)*20, 
-                    ease: "power3.out" 
-                });
-                gsap.to(p.mesh.rotation, { duration: 3, x: Math.random()*3, y: Math.random()*3, z: Math.random()*3 });
-            });
-        }
-        
         function toCarouselState() {
-            // 粒子保持散开状态
+            // Particles -> Scatter (Background)
             gsap.to(animState, { value: 1, duration: 2 });
-            
+            gsap.to(camera.position, { duration: 2, x: 0, y: 0, z: 40 });
+            gsap.to(worldGroup.rotation, { duration: 2, x: 0, y: 0, z: 0 }); // Reset world rotation
+
             const count = photoParticles.length;
-            photoParticles.forEach((p, index) => {
-                const angle = (index / count) * Math.PI * 2;
-                p.carouselAngle = angle;
+            const angleStep = (Math.PI * 2) / count;
+
+            photoParticles.forEach((p, i) => {
+                const angle = i * angleStep;
                 const x = Math.cos(angle) * CONFIG.carouselRadius;
                 const z = Math.sin(angle) * CONFIG.carouselRadius;
                 
+                // Move to ring
                 gsap.to(p.mesh.position, { duration: 2, x: x, y: 0, z: z, ease: "power2.out" });
-                gsap.to(p.mesh.rotation, { duration: 2, x: 0, y: Math.atan2(x, z) + Math.PI, z: 0 });
+                // Look at center (plus PI to face outward)
+                const targetRot = Math.atan2(x, z) + Math.PI;
+                gsap.to(p.mesh.rotation, { duration: 2, x: 0, y: targetRot, z: 0 });
                 gsap.to(p.mesh.scale, { duration: 2, x: 1.5, y: 1.5, z: 1.5 });
             });
-            
-            carouselRotation = 0;
-            gsap.to(camera.position, { duration: 2, x: 0, y: 0, z: 35 });
-            gsap.to(worldGroup.rotation, { duration: 2, x: 0, y: 0, z: 0 });
         }
+
+        function toZoomState() {
+            // Find the photo currently closest to the camera (highest Z in world space)
+            // Since we rotate the group, we need to calculate effective position
+            let bestDist = -Infinity;
+            let targetP = null;
+
+            photoParticles.forEach(p => {
+                // Approximate world Z (simplified since group rotation handles the spin)
+                // We actually just need to find the one facing front based on Carousel logic
+                // Or simply: find the one with largest Z after rotation apply
+                // Let's rely on calculation:
+                const angle = (p.index / photoParticles.length) * Math.PI * 2 + carouselAngleOffset;
+                const z = Math.sin(angle) * CONFIG.carouselRadius; // Z is depth here
+                if (z > bestDist) {
+                    bestDist = z;
+                    targetP = p;
+                }
+            });
+
+            if (!targetP) return;
+
+            // Bring target to front center
+            gsap.to(targetP.mesh.position, { duration: 1, x: 0, y: 0, z: 32, ease: "power3.out" }); // Close to camera (45)
+            gsap.to(targetP.mesh.rotation, { duration: 1, x: 0, y: 0, z: 0 }); // Face camera
+            gsap.to(targetP.mesh.scale, { duration: 1, x: 3, y: 3, z: 3 }); // Big Zoom
+
+            // Push others back slightly
+            photoParticles.forEach(p => {
+                if (p !== targetP) {
+                    gsap.to(p.mesh.scale, { duration: 1, x: 0.5, y: 0.5, z: 0.5 });
+                }
+            });
+        }
+
+        // --- MediaPipe Gestures ---
 
         function setupMediaPipe() {
             const videoElement = document.getElementById('video-input');
             const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
-            hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.6, minTrackingConfidence: 0.5 });
+            hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.65, minTrackingConfidence: 0.5 });
             hands.onResults(onResults);
             const cameraUtils = new Camera(videoElement, {
                 onFrame: async () => { await hands.send({image: videoElement}); },
-                width: 320, height: 240, facingMode: 'user' // 进一步降低分辨率提升性能
+                width: 320, height: 240, facingMode: 'user'
             });
             cameraUtils.start()
-                .then(() => { gsap.to('#loader', { duration: 1, opacity: 0, onComplete: () => document.getElementById('loader').style.display = 'none' }); })
-                .catch(err => { console.error(err); document.getElementById('loader').innerHTML = "<div style='color:#d4af37; text-align:center'>Camera access needed<br>for gestures.</div>"; gsap.to('#loader', { delay: 3, duration: 1, opacity: 0, onComplete: () => document.getElementById('loader').style.display = 'none' }); });
+                .then(() => { gsap.to('#loader', { duration: 0.5, opacity: 0, onComplete: () => document.getElementById('loader').style.display = 'none' }); })
+                .catch(err => { console.error(err); document.getElementById('loader').innerText = "CAMERA ERROR"; });
         }
 
         function onResults(results) {
             if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                const landmarks = results.multiHandLandmarks[0];
-                detectGesture(landmarks);
+                detectGesture(results.multiHandLandmarks[0]);
             }
         }
 
@@ -418,18 +435,42 @@
             const wrist = landmarks[0];
             const thumbTip = landmarks[4];
             const indexTip = landmarks[8];
-            let avgDist = 0;
-            [8, 12, 16, 20].forEach(idx => { avgDist += Math.sqrt(Math.pow(landmarks[idx].x - wrist.x, 2) + Math.pow(landmarks[idx].y - wrist.y, 2)); });
-            avgDist /= 4;
-            const pinchDist = Math.sqrt(Math.pow(thumbTip.x - indexTip.x, 2) + Math.pow(thumbTip.y - indexTip.y, 2));
-            const handX = 1.0 - landmarks[9].x; 
 
-            if (avgDist < 0.18) { if(currentState !== 'TREE') switchState('TREE'); } 
-            else if (pinchDist < 0.05 && photoParticles.length > 0) { if (currentState !== 'CAROUSEL') switchState('CAROUSEL'); }
-            else if (avgDist > 0.38) { if(currentState === 'TREE') switchState('SCATTERED'); }
+            // 1. Calculate Pinch Distance (Index to Thumb)
+            const pinchDist = Math.sqrt(
+                Math.pow(thumbTip.x - indexTip.x, 2) + 
+                Math.pow(thumbTip.y - indexTip.y, 2)
+            );
 
-            if (currentState === 'CAROUSEL') { targetRotationY = (Math.max(0.2, Math.min(0.8, handX)) - 0.5) * Math.PI * 5; } 
-            else if (currentState === 'SCATTERED') { targetRotationY = (handX - 0.5) * 5; }
+            // 2. Calculate Fist (Fingertips to Wrist)
+            let tipsDist = 0;
+            [8, 12, 16, 20].forEach(i => {
+                tipsDist += Math.sqrt(Math.pow(landmarks[i].x - wrist.x, 2) + Math.pow(landmarks[i].y - wrist.y, 2));
+            });
+            const isFist = (tipsDist / 4) < 0.18;
+
+            // --- Logic ---
+
+            // Priority 1: Fist -> Reset
+            if (isFist) {
+                if (currentState !== 'TREE') switchState('TREE');
+                return;
+            }
+
+            // Priority 2: Pinch (Close) -> Enter Gallery
+            if (pinchDist < 0.05) {
+                if (currentState !== 'CAROUSEL') switchState('CAROUSEL');
+                return;
+            }
+
+            // Priority 3: Spread (Index/Thumb Open) -> Zoom
+            // Only acts if we are ALREADY in Gallery
+            if (currentState === 'CAROUSEL' && pinchDist > 0.20) {
+                switchState('ZOOM');
+            }
+            
+            // Note: Removed "Scatter" on open hand to avoid conflict with Zoom.
+            // Zoom implies opening hand, so let's keep it specific.
         }
 
         function onWindowResize() {
@@ -443,23 +484,29 @@
             requestAnimationFrame(animate);
             const time = performance.now() * 0.001;
 
-            // 更新 Shader 时间 uniform
             if (particleSystem) particleSystem.material.uniforms.uTime.value = time;
 
             if (currentState === 'CAROUSEL') {
-                carouselRotation += (targetRotationY - carouselRotation) * 0.05;
-                photoParticles.forEach(p => {
-                    const currentAngle = p.carouselAngle + carouselRotation;
-                    p.mesh.position.x = Math.cos(currentAngle) * CONFIG.carouselRadius;
-                    p.mesh.position.z = Math.sin(currentAngle) * CONFIG.carouselRadius;
-                    p.mesh.rotation.y = Math.atan2(p.mesh.position.x, p.mesh.position.z) + Math.PI;
-                });
-                worldGroup.rotation.y += 0.0005;
-            } else if (currentState === 'SCATTERED') {
-                worldGroup.rotation.y += (targetRotationY - worldGroup.rotation.y) * 0.05;
+                // Auto rotate carousel slowly
+                carouselAngleOffset += 0.002;
+                
+                // Update photo positions based on carousel rotation
+                const count = photoParticles.length;
+                if (count > 0) {
+                    const angleStep = (Math.PI * 2) / count;
+                    photoParticles.forEach((p, i) => {
+                        const currentAngle = i * angleStep + carouselAngleOffset;
+                        p.mesh.position.x = Math.cos(currentAngle) * CONFIG.carouselRadius;
+                        p.mesh.position.z = Math.sin(currentAngle) * CONFIG.carouselRadius;
+                        // Always face center + PI to face out
+                        p.mesh.rotation.y = Math.atan2(p.mesh.position.x, p.mesh.position.z) + Math.PI;
+                    });
+                }
             } else if (currentState === 'TREE') {
-                worldGroup.rotation.y += 0.001; // 非常缓慢的自转
+                // Auto rotate tree slowly
+                worldGroup.rotation.y += 0.002;
             }
+            // In ZOOM mode, we stop rotation to focus on the photo
 
             composer.render();
         }
