@@ -1,1 +1,441 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mobile Gesture Xmas Tree</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; touch-action: none; /* 禁止默认触摸行为 */ }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        
+        /* 视频隐藏，但必须存在 */
+        #video-input { position: absolute; top: 0; left: 0; opacity: 0; pointer-events: none; width: 1px; height: 1px; }
+        
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;
+            display: flex; flex-direction: column; justify-content: space-between; padding: 15px; box-sizing: border-box;
+            z-index: 10;
+        }
+        
+        h1 { margin: 0; font-weight: 300; text-transform: uppercase; font-size: 18px; color: #FFD700; text-shadow: 0 0 10px rgba(255, 215, 0, 0.5); }
+        
+        .status-badge {
+            display: inline-block; padding: 4px 10px; border: 1px solid rgba(255, 215, 0, 0.5);
+            border-radius: 15px; margin-top: 5px; background: rgba(0,0,0,0.6);
+            color: #fff; font-size: 10px;
+        }
 
+        /* 手机端加大按钮触控区域 */
+        #upload-btn {
+            background: rgba(255, 215, 0, 0.15); border: 1px solid rgba(255, 215, 0, 0.6);
+            color: #FFD700; padding: 12px 25px; cursor: pointer; pointer-events: auto;
+            text-transform: uppercase; font-size: 12px; border-radius: 8px;
+            backdrop-filter: blur(5px);
+        }
+        
+        #loader {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; z-index: 999; display: flex; align-items: center; justify-content: center;
+            color: #FFD700; flex-direction: column; transition: opacity 0.5s; padding: 20px; text-align: center;
+        }
+        .spinner {
+            width: 30px; height: 30px; border: 2px solid #333; border-top: 2px solid #FFD700;
+            border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        #guide {
+            position: absolute; bottom: 20px; right: 15px; text-align: right;
+            background: rgba(0,0,0,0.3); padding: 10px; border-radius: 10px;
+            pointer-events: none;
+        }
+        .guide-item { margin: 3px 0; font-size: 11px; color: #ccc; }
+        .key { color: #FFD700; font-weight: bold; margin-right: 4px; }
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+</head>
+<body>
+
+    <video id="video-input" playsinline webkit-playsinline></video>
+
+    <div id="loader">
+        <div class="spinner"></div>
+        <div>启动中...</div>
+        <div style="font-size: 12px; color: #888; margin-top: 10px;">
+            请允许使用摄像头<br>或直接触摸屏幕操作
+        </div>
+    </div>
+
+    <div id="ui-layer">
+        <div>
+            <h1>Xmas Magic</h1>
+            <div class="status-badge" id="status-display">INIT...</div>
+            <br><br>
+            <label for="file-input" id="upload-btn">📷 添加照片</label>
+            <input type="file" id="file-input" multiple accept="image/*" style="display: none;">
+        </div>
+        
+        <div id="guide">
+            <div class="guide-item"><span class="key">✊</span> 握拳: 变树</div>
+            <div class="guide-item"><span class="key">🖐</span> 张手: 爆炸</div>
+            <div class="guide-item"><span class="key">👆</span> 触摸: 也可以控制</div>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // --- 针对手机优化的配置 ---
+        const CONFIG = {
+            colors: {
+                gold: 0xFFD700,
+                red: 0x8B0000,
+                green: 0x1a472a,
+                white: 0xFFFFFF
+            },
+            // 手机端减少粒子数量以保证流畅
+            particleCount: 350, 
+            treeHeight: 25,
+            treeRadius: 10,
+            scatterRadius: 35
+        };
+
+        let scene, camera, renderer, composer;
+        let particles = [];
+        let photoParticles = [];
+        let time = 0;
+        let currentState = 'TREE'; 
+        let targetRotationY = 0;
+        let activePhotoIndex = -1;
+        const worldGroup = new THREE.Group();
+
+        // 触摸控制变量
+        let touchStartX = 0;
+        let isTouching = false;
+
+        async function init() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x050505, 0.03);
+            
+            camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 500);
+            camera.position.set(0, 5, 35); // 稍微拉近一点
+
+            renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            // 限制像素比率，防止高分屏手机过热
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); 
+            renderer.toneMapping = THREE.ReinhardToneMapping;
+            document.body.appendChild(renderer.domElement);
+
+            scene.add(worldGroup);
+
+            // 灯光
+            const ambientLight = new THREE.AmbientLight(0x404040, 1.5);
+            scene.add(ambientLight);
+            const pointLight = new THREE.PointLight(CONFIG.colors.gold, 2, 80);
+            pointLight.position.set(0, 10, 10);
+            scene.add(pointLight);
+
+            // 后处理 - 降低分辨率以提升性能
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth/2, window.innerHeight/2), 1.5, 0.4, 0.85);
+            bloomPass.threshold = 0.15;
+            bloomPass.strength = 1.0;
+            bloomPass.radius = 0.5;
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            createDecorations();
+            
+            window.addEventListener('resize', onWindowResize);
+            document.getElementById('file-input').addEventListener('change', handleUpload);
+
+            // 添加触摸事件支持
+            setupTouchEvents();
+
+            // 启动 MediaPipe 和 动画
+            setupMediaPipe();
+            animate();
+        }
+
+        // --- 触摸交互 (备用方案) ---
+        function setupTouchEvents() {
+            document.addEventListener('touchstart', (e) => {
+                touchStartX = e.touches[0].clientX;
+                isTouching = true;
+            }, {passive: false});
+
+            document.addEventListener('touchmove', (e) => {
+                if (!isTouching) return;
+                const touchX = e.touches[0].clientX;
+                const diffX = touchX - touchStartX;
+                
+                // 滑动旋转
+                if (currentState === 'SCATTERED') {
+                    worldGroup.rotation.y += diffX * 0.005;
+                }
+                touchStartX = touchX;
+                // 阻止默认滚动
+                if(e.cancelable) e.preventDefault(); 
+            }, {passive: false});
+
+            document.addEventListener('touchend', () => {
+                isTouching = false;
+            });
+            
+            // 双击屏幕切换状态（方便没有摄像头权限时演示）
+            let lastTap = 0;
+            document.addEventListener('click', (e) => {
+                const currentTime = new Date().getTime();
+                const tapLength = currentTime - lastTap;
+                if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'LABEL') {
+                    if (tapLength < 500 && tapLength > 0) {
+                        // Double Tap
+                        toggleState();
+                    }
+                }
+                lastTap = currentTime;
+            });
+        }
+
+        function toggleState() {
+            if(currentState === 'TREE') switchState('SCATTERED');
+            else switchState('TREE');
+        }
+
+        // --- 粒子系统 ---
+        class Particle {
+            constructor(mesh, type) {
+                this.mesh = mesh;
+                this.type = type;
+                this.scatterPos = new THREE.Vector3(
+                    (Math.random() - 0.5) * CONFIG.scatterRadius * 2,
+                    (Math.random() - 0.5) * CONFIG.scatterRadius * 2,
+                    (Math.random() - 0.5) * CONFIG.scatterRadius * 2
+                );
+                this.treePos = new THREE.Vector3();
+                this.originalScale = mesh.scale.clone();
+                this.floatOffset = Math.random() * 100;
+            }
+
+            update(currentState, time) {
+                this.mesh.rotation.x += 0.01;
+                this.mesh.rotation.y += 0.01;
+                if (currentState === 'SCATTERED') {
+                    this.mesh.position.y += Math.sin(time * 2 + this.floatOffset) * 0.01;
+                }
+            }
+        }
+
+        function createDecorations() {
+            const goldMat = new THREE.MeshStandardMaterial({ color: CONFIG.colors.gold, metalness: 0.9, roughness: 0.3 });
+            const redMat = new THREE.MeshStandardMaterial({ color: CONFIG.colors.red, metalness: 0.5, roughness: 0.4 });
+            const greenMat = new THREE.MeshStandardMaterial({ color: CONFIG.colors.green, metalness: 0.1, roughness: 0.8 });
+
+            const geoms = [
+                { geo: new THREE.SphereGeometry(0.5, 16, 16), mat: goldMat }, // 降低几何体面数
+                { geo: new THREE.BoxGeometry(0.7, 0.7, 0.7), mat: redMat },
+                { geo: new THREE.IcosahedronGeometry(0.6, 0), mat: greenMat }
+            ];
+
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                const choice = geoms[Math.floor(Math.random() * geoms.length)];
+                const mesh = new THREE.Mesh(choice.geo, choice.mat);
+                
+                const angle = i * 0.6;
+                const y = (i / CONFIG.particleCount) * CONFIG.treeHeight - (CONFIG.treeHeight / 2);
+                const progress = (y + (CONFIG.treeHeight / 2)) / CONFIG.treeHeight; 
+                const currentRadius = CONFIG.treeRadius * (1 - progress);
+                
+                const x = Math.cos(angle) * currentRadius;
+                const z = Math.sin(angle) * currentRadius;
+
+                mesh.position.set(x, y, z);
+                worldGroup.add(mesh);
+
+                const p = new Particle(mesh, 'decoration');
+                p.treePos.set(x, y, z);
+                particles.push(p);
+            }
+        }
+
+        function handleUpload(event) {
+            const files = event.target.files;
+            if (!files.length) return;
+            const loader = new THREE.TextureLoader();
+            
+            // 手机端限制同时上传数量，避免崩溃
+            const limit = Math.min(files.length, 5);
+
+            Array.from(files).slice(0, limit).forEach((file) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    loader.load(e.target.result, (texture) => {
+                        const aspectRatio = texture.image.width / texture.image.height;
+                        const geometry = new THREE.PlaneGeometry(3 * aspectRatio, 3);
+                        const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide, transparent: true });
+                        const mesh = new THREE.Mesh(geometry, material);
+                        
+                        // 简单的插入逻辑
+                        const y = (Math.random() * CONFIG.treeHeight) - (CONFIG.treeHeight/2);
+                        mesh.position.set(0, y, 5); 
+                        
+                        worldGroup.add(mesh);
+                        const p = new Particle(mesh, 'photo');
+                        p.treePos.set(Math.random()*5, y, 5); 
+                        particles.push(p);
+                        photoParticles.push(p);
+                        
+                        // 立即进入 Tree 状态以归位
+                        if(currentState === 'TREE') toTreeState();
+                    });
+                };
+                reader.readAsDataURL(file);
+            });
+            document.getElementById('status-display').innerText = "已添加照片";
+        }
+
+        // --- 状态切换 ---
+        function switchState(newState) {
+            if (currentState === newState) return;
+            currentState = newState;
+            document.getElementById('status-display').innerText = `模式: ${currentState === 'TREE' ? '圣诞树' : '星云'}`;
+
+            if (currentState === 'TREE') toTreeState();
+            else if (currentState === 'SCATTERED') toScatteredState();
+            else if (currentState === 'ZOOM') toZoomState();
+        }
+
+        function toTreeState() {
+            gsap.to(camera.position, { duration: 1.5, z: 35, ease: "power2.inOut" });
+            particles.forEach(p => {
+                gsap.to(p.mesh.position, { duration: 1.5, x: p.treePos.x, y: p.treePos.y, z: p.treePos.z, ease: "elastic.out(1, 0.5)" });
+                gsap.to(p.mesh.rotation, { duration: 1, x: 0, y: 0, z: 0 });
+            });
+        }
+
+        function toScatteredState() {
+            particles.forEach(p => {
+                gsap.to(p.mesh.position, { duration: 2, x: p.scatterPos.x, y: p.scatterPos.y, z: p.scatterPos.z, ease: "power2.out" });
+                gsap.to(p.mesh.rotation, { duration: 2, x: Math.random()*3, y: Math.random()*3 });
+            });
+        }
+        
+        function toZoomState() {
+            // 简化手机版Zoom，仅作为示例
+            if (photoParticles.length === 0) return;
+            activePhotoIndex = (activePhotoIndex + 1) % photoParticles.length;
+            const targetP = photoParticles[activePhotoIndex];
+            
+            gsap.to(targetP.mesh.position, { duration: 1, x: 0, y: 0, z: 25 });
+            gsap.to(targetP.mesh.scale, { duration: 1, x: 2, y: 2, z: 2 });
+        }
+
+        // --- MediaPipe 手机版优化 ---
+        function setupMediaPipe() {
+            const videoElement = document.getElementById('video-input');
+            const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 0, // 0 = Lite (关键！适合手机), 1 = Full
+                minDetectionConfidence: 0.6,
+                minTrackingConfidence: 0.5
+            });
+
+            hands.onResults(onResults);
+
+            const cameraUtils = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({image: videoElement});
+                },
+                width: 480, // 降低分辨率以提高性能
+                height: 640,
+                facingMode: 'user' // 强制使用前置摄像头
+            });
+            
+            cameraUtils.start()
+                .then(() => {
+                    document.getElementById('loader').style.display = 'none';
+                })
+                .catch(err => {
+                    console.error("Camera failed", err);
+                    document.getElementById('loader').innerHTML = "<div style='color:white'>摄像头启动失败<br>请检查HTTPS或权限<br>尝试双击屏幕操作</div>";
+                    setTimeout(() => document.getElementById('loader').style.display = 'none', 3000);
+                });
+        }
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                detectGesture(landmarks);
+            }
+        }
+
+        function detectGesture(landmarks) {
+            // 简单握拳判定
+            const wrist = landmarks[0];
+            const tips = [8, 12, 16, 20];
+            let avgDist = 0;
+            tips.forEach(idx => {
+                const d = Math.sqrt(Math.pow(landmarks[idx].x - wrist.x, 2) + Math.pow(landmarks[idx].y - wrist.y, 2));
+                avgDist += d;
+            });
+            avgDist /= 4;
+
+            // 简单旋转逻辑
+            const handX = landmarks[9].x;
+            if (currentState === 'SCATTERED') {
+                targetRotationY = (0.5 - handX) * 3;
+            }
+
+            if (avgDist < 0.2) {
+                 if(currentState !== 'TREE') switchState('TREE');
+            } else if (avgDist > 0.35) {
+                 if(currentState !== 'SCATTERED') switchState('SCATTERED');
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            time += 0.01;
+
+            if (currentState === 'SCATTERED') {
+                worldGroup.rotation.y += (targetRotationY - worldGroup.rotation.y) * 0.05;
+            } else {
+                worldGroup.rotation.y += 0.003;
+            }
+
+            particles.forEach(p => p.update(currentState, time));
+            composer.render();
+        }
+
+        init();
+    </script>
+</body>
+</html>
